@@ -117,7 +117,7 @@ class PrintKey(hl.HiveList):
                     outfd.write("Unable to find requested key\n")
                 continue
             outfd.write("Legend: (S) = Stable   (V) = Volatile\n\n")
-            outfd.write("\nRegistry: {0}\n".format(reg))
+            outfd.write("Registry: {0}\n".format(reg))
             outfd.write("Key name: {0} {1:3s}\n".format(key.Name, self.voltext(key)))
             outfd.write("Last updated: {0}\n".format(key.LastWriteTime))
             outfd.write("\n")
