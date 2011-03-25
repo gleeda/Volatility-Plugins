@@ -75,7 +75,7 @@ class PrintKey(hl.HiveList):
         config.add_option('KEY', short_option = 'K',
                           help = 'Registry Key', type = 'str')
         config.add_option('BRUTE-FORCE', short_option = 'b', default = False,
-                          help = 'Get bruteforce keys from the Registry',
+                          help = 'Bruteforce a key from the Registry',
                           action = "store_true")
 
     def calculate(self):
