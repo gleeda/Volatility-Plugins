@@ -28,42 +28,32 @@
 import volatility.plugins.registry.printkey as printkey
 import volatility.win32.hive as hivemod
 import volatility.win32.rawreg as rawreg
+import volatility.addrspace as addrspace
+import volatility.obj as obj
 import volatility.debug as debug
 import volatility.utils as utils
 import volatility.plugins.registry.hivelist as hivelist
-import struct
 import datetime
 
+# for Windows 7 userassist info check out Didier Stevens' article
+# from Into the Boxes issue 0x0: 
+#  http://intotheboxes.wordpress.com/2010/01/01/into-the-boxes-issue-0x0/
+ua_win7_vtypes = {
+  '_VOLUSER_ASSIST_TYPES' : [ 0x48, {
+    'Count': [0x04, ['unsigned int']],
+    'FocusCount': [0x08, ['unsigned int']],
+    'FocusTime': [0x0C, ['unsigned int']],
+    'LastUpdated' : [0x3C, ['WinTimeStamp']]
+} ],
+}
 
-# yeah, i know... i copied this from windows.py... just seemed easier...
-# this will be removed soon...
-def windows_to_unix_time(windows_time):
-    """ 
-    Converts Windows 64-bit time to UNIX time
-
-    @type  windows_time:  Integer
-    @param windows_time:  Windows time to convert (64-bit number)
-    
-    @rtype  Integer
-    @return  UNIX time
-    """
-    if(windows_time == 0): 
-        unix_time = 0 
-    else:
-        unix_time = windows_time / 10000000
-        unix_time = unix_time - 11644473600
-
-    if unix_time < 0:
-        unix_time = 0 
-
-    return unix_time
-
-def as_datetime(unix_time):
-    try:
-        dt = datetime.datetime.utcfromtimestamp(unix_time)
-    except ValueError, e:
-        return None
-    return dt
+ua_vtypes = {
+  '_VOLUSER_ASSIST_TYPES' : [ 0x10, {
+    'ID': [0x0, ['unsigned int']],
+    'CountStartingAtFive': [0x04, ['unsigned int']],
+    'LastUpdated' : [0x08, ['WinTimeStamp']]
+} ],
+}
 
 # taken from http://msdn.microsoft.com/en-us/library/dd378457%28v=vs.85%29.aspx
 folder_guids = {
@@ -139,7 +129,7 @@ folder_guids = {
     "{8AD10C31-2ADB-4296-A8F7-E4701232C972}":"%windir%\\Resources",
     "{C870044B-F49E-4126-A9C3-B52A1FF411E8}":"%LOCALAPPDATA%\\Microsoft\\Windows\\Ringtones",
     "{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}":"%APPDATA% (%USERPROFILE%\\AppData\\Roaming)",
-    "{B250C668-F57D-4EE1-A63C-290EE7D1AA1F}":"%PUBLIC%\\Music\\Sample Music",  
+    "{B250C668-F57D-4EE1-A63C-290EE7D1AA1F}":"%PUBLIC%\\Music\\Sample Music",
     "{C4900540-2379-4C75-844B-64E6FAF8716B}":"%PUBLIC%\\Pictures\\Sample Pictures",
     "{15CA69B3-30EE-49C1-ACE1-6B5EC372AFB5}":"%PUBLIC%\\Music\\Sample Playlists",
     "{859EAD94-2E85-48AD-A71A-0969CB56A6CD}":"%PUBLIC%\\Videos\\Sample Videos",
@@ -182,8 +172,11 @@ class UserAssist(printkey.PrintKey, hivelist.HiveList):
     def calculate(self):
         addr_space = utils.load_as(self._config)
         win7 = False
-        if addr_space.profile.metadata.get('major', 0) == 6 and addr_space.profile.metadata.get('minor',0) == 1:
+        if addr_space.profile.metadata.get('major', 0) == 6 and addr_space.profile.metadata.get('minor', 0) == 1:
             win7 = True
+            addr_space.profile.add_types(ua_win7_vtypes)
+        else:
+            addr_space.profile.add_types(ua_vtypes)
 
         if not self._config.HIVE_OFFSET:
             hive_offsets = [(self.hive_name(h), h.obj_offset) for h in hivelist.HiveList.calculate(self)]
@@ -209,46 +202,26 @@ class UserAssist(printkey.PrintKey, hivelist.HiveList):
                     uakey = skey + "{5E6AB780-7743-11CF-A12B-00AA004AE837}\\Count"
                     yield win7, name, rawreg.open_key(root, uakey.split('\\'))
 
-    def parse_data(self, win7, dat_raw):
-        dat = ""
-        addr_space = utils.load_as(self._config)
-        if win7:
-            # for Windows 7 userassist info check out Didier Stevens' article
-            # from Into the Boxes issue 0x0: 
-            #  http://intotheboxes.wordpress.com/2010/01/01/into-the-boxes-issue-0x0/
-            try:
-                p = struct.unpack('<iiiiqqqqqiqi', dat_raw)
-            except:
-                return None 
-            try:
-                unix = windows_to_unix_time(p[10])
-                d = "\n{0:15} {1}\n{2:15} {3}\n".format("Count:", str(p[1]), "Focus Count:", str(p[2]))
-                msec = p[3]
-                seconds = ((msec + 500) / 1000)
-                if seconds > 0:
-                    d = d + "{0:15} {1}\n".format("Time Focused:", str(datetime.timedelta(seconds=seconds)))
-                elif msec > 0:
-                    seconds = str(msec) + " milliseconds"
-                    d = d + "{0:15} {1}\n".format("Time Focused:", seconds)
-                dat = d  + "{0:15} {1}\n".format("Last updated:", str(as_datetime(unix)) or '')
-            except:
-                return None
-        else:
-            # adapted from RR plugin by Harlan Carvey
-            try:
-                p = struct.unpack('<iiq', dat_raw)
-            except:
-                return None
-            try:
-                unix = windows_to_unix_time(p[2])
-                count = p[1]
-                if count > 5:
-                    count -= 5
-                dat = "\n{0:15} {1}\n{2:15} {3}\n{4:15} {5}\n".format("ID:", str(p[0]), "Count:", str(count), "Last updated:", str(as_datetime(unix)) or '') 
-            except:
-                return None
-        return dat
+    def parse_data(self, dat_raw):
+        bufferas = addrspace.BufferAddressSpace(self._config, data = dat_raw)
+        uadata = obj.Object("_VOLUSER_ASSIST_TYPES", offset = 0, vm = bufferas)
+        if len(dat_raw) < bufferas.profile.get_obj_size('_VOLUSER_ASSIST_TYPES') or uadata == None:
+            return None
 
+        output = ""
+        if hasattr(uadata, "ID"):
+            output = "\n{0:15} {1}".format("ID:", uadata.ID)
+        if hasattr(uadata, "Count"):
+            output += "\n{0:15} {1}".format("Count:", uadata.Count)
+        else:
+            output += "\n{0:15} {1}".format("Count:", uadata.CountStartingAtFive if uadata.CountStartingAtFive < 5 else uadata.CountStartingAtFive - 5)
+        if hasattr(uadata, "FocusCount"):
+            seconds = (uadata.FocusTime + 500) / 1000.0
+            time = datetime.timedelta(seconds = seconds) if seconds > 0 else uadata.FocusCount 
+            output += "\n{0:15} {1}\n{2:15} {3}".format("Focus Count:", uadata.FocusCount, "Time Focused:", time)
+        output += "\n{0:15} {1}\n".format("Last updated:", uadata.LastUpdated)
+
+        return output
 
     def render_text(self, outfd, data):
         keyfound = False
@@ -272,8 +245,8 @@ class UserAssist(printkey.PrintKey, hivelist.HiveList):
                     tp, dat = rawreg.value_data(v)
                     subname = v.Name
                     if tp == 'REG_BINARY':
-                        dat_raw = dat 
-                        dat = "\n" + printkey.hd(dat, length = 16) 
+                        dat_raw = dat
+                        dat = "\n" + printkey.hd(dat, length = 16)
                         try:
                             subname = subname.encode('rot_13')
                         except:
@@ -282,7 +255,7 @@ class UserAssist(printkey.PrintKey, hivelist.HiveList):
                             guid = subname.split("\\")[0]
                             if guid in folder_guids:
                                 subname = subname.replace(guid, folder_guids[guid])
-                        d = self.parse_data(win7, dat_raw) 
+                        d = self.parse_data(dat_raw)
                         if d != None:
                             dat = d + dat
                     #these types shouldn't be encountered, but are just left here in case:
