@@ -217,7 +217,7 @@ class UserAssist(printkey.PrintKey, hivelist.HiveList):
             output += "\n{0:15} {1}".format("Count:", uadata.CountStartingAtFive if uadata.CountStartingAtFive < 5 else uadata.CountStartingAtFive - 5)
         if hasattr(uadata, "FocusCount"):
             seconds = (uadata.FocusTime + 500) / 1000.0
-            time = datetime.timedelta(seconds = seconds) if seconds > 0 else uadata.FocusCount 
+            time = datetime.timedelta(seconds = seconds) if seconds > 0 else uadata.FocusTime
             output += "\n{0:15} {1}\n{2:15} {3}".format("Focus Count:", uadata.FocusCount, "Time Focused:", time)
         output += "\n{0:15} {1}\n".format("Last updated:", uadata.LastUpdated)
 
