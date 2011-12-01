@@ -81,6 +81,11 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
         imageinfo.ImageInfo.__init__(self, config, *args)
         config.add_option("UNSAFE", short_option = "u", default = False, action = 'store_true',
                           help = 'Bypasses certain sanity checks when creating image')
+        config.remove_option("KEY")
+        config.remove_option("START")
+        config.remove_option("END")
+        config.remove_option("VALUE")
+
 
     def render_text(self, outfd, data):
         for line in data:

@@ -103,7 +103,7 @@ class RegistryAPI(hl.HiveList):
                 or name.lower().find("\\software ") != -1 or name.lower().find("\\sam ") != -1):
                 #any HKLM hive 
                 self.current_offsets[item] = name
-            elif hive_name != None and name.lower().find("\\" + hive_name.lower() + " ") != -1: 
+            elif hive_name != None and name.lower().find("\\" + hive_name.lower() + " ") != -1 and user == None:
                 #a particular hive indicated by hive_name
                 if hive_name.lower() == "system" and name.lower().find("\\syscache.hve ") == -1:
                     self.current_offsets[item] = name
