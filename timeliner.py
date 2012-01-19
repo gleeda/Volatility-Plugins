@@ -125,8 +125,8 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
 
         # Get Sockets and Evtlogs XP/2k3 only
         if addr_space.profile.metadata.get('major', 0) == 5:
-            socks = sockets.Sockets.calculate(self)
-            #socks = sockscan.SockScan.calculate(self)   # you can use sockscan instead if you uncomment
+            #socks = sockets.Sockets.calculate(self)
+            socks = sockscan.SockScan.calculate(self)
             for sock in socks:
                 la = "{0}:{1}".format(sock.LocalIpAddress, sock.LocalPort)
                 line = "{0}|[SOCKET]|{1}|{2}|Protocol: {3} ({4})|{5:#010x}|||\n".format(
@@ -259,12 +259,12 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
             else:
                 dllskip = False
                 dlls = []
-            for proc, ps_ad, mod in dlls:
-                if ps_ad.is_valid_address(mod.DllBase):
-                    if mod.FullDllName == task.ImageFileName:
+            for proc, ps_ad, mod_base, mod_name in dlls:
+                if ps_ad.is_valid_address(mod_base):
+                    if mod_name == task.ImageFileName:
                         continue
                     try:
-                        header = self.get_nt_header(ps_ad, mod.DllBase)
+                        header = self.get_nt_header(ps_ad, mod_base)
                     except ValueError, ve: 
                         continue
                     try:
@@ -274,9 +274,9 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                             task.ImageFileName,
                             task.UniqueProcessId,
                             task.InheritedFromUniqueProcessId,
-                            mod.FullDllName,
+                            mod_name,
                             o,
-                            mod.DllBase)
+                            mod_base)
                     except:
                         line = "{0}|{1}|{2}|{3}|{4}|{5}|EPROCESS Offset: 0x{6:08x}|DLL Base: {7:8x}||\n".format(
                             "-1",
@@ -284,9 +284,9 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                             task.ImageFileName,
                             task.UniqueProcessId,
                             task.InheritedFromUniqueProcessId,
-                            mod.FullDllName,
+                            mod_name,
                             o,
-                            mod.DllBase)
+                            mod_base)
                     yield line
 
         self.reset_current()
