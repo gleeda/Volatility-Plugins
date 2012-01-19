@@ -38,6 +38,7 @@ import volatility.plugins.registryapi as registryapi
 import volatility.plugins.userassist as userassist
 import volatility.plugins.imageinfo as imageinfo
 import volatility.win32.rawreg as rawreg
+import volatility.win32.tasks as tasks
 import volatility.addrspace as addrspace
 import volatility.plugins.overlays.windows.windows as windows
 import volatility.utils as utils
@@ -192,7 +193,7 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
             data = moddump.ModDump.calculate(self)
 
             for addr_space, procs, mod_base, mod_name in data:
-                space = self.find_space(addr_space, procs, mod_base)
+                space = tasks.find_space(addr_space, procs, mod_base)
                 if space != None:
                     try:
                         header = self.get_nt_header(space, mod_base)
