@@ -31,6 +31,8 @@ import volatility.plugins.filescan as filescan
 import volatility.utils as utils
 
 
+# original how-to: http://gleeda.blogspot.com/2011/04/whats-difference-brief-volatility-14.html
+
 class PSDiff(filescan.PSScan, taskmods.PSList):
     """ Prints a processes found by psscan, but not in pslist"""
 
