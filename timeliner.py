@@ -25,6 +25,7 @@
 """
 
 import volatility.plugins.taskmods as taskmods
+import volatility.plugins.registry.shimcache as shimcache
 import volatility.plugins.filescan as filescan
 import volatility.plugins.sockets as sockets
 import volatility.plugins.sockscan as sockscan
@@ -34,85 +35,92 @@ import volatility.plugins.dlldump as dlldump
 import volatility.plugins.moddump as moddump
 import volatility.plugins.netscan as netscan
 import volatility.plugins.evtlogs as evtlogs
-import volatility.plugins.registryapi as registryapi
 import volatility.plugins.userassist as userassist
 import volatility.plugins.imageinfo as imageinfo
 import volatility.win32.rawreg as rawreg
-import volatility.win32.tasks as tasks
 import volatility.addrspace as addrspace
-import volatility.plugins.overlays.windows.windows as windows
+import volatility.win32.tasks as tasks
 import volatility.utils as utils
 import volatility.protos as protos
 import os, sys
 import struct
+import calendar
 import volatility.debug as debug
 import volatility.obj as obj 
 import datetime
 
-class TimeLiner(filescan.PSScan, sockets.Sockets, 
-                sockscan.SockScan,
-                modscan.ThrdScan, 
-                dlldump.DLLDump,
-                moddump.ModDump,
-                procdump.ProcExeDump, 
-                modscan.ModScan, 
-                netscan.Netscan,
-                evtlogs.EvtLogs,
-                userassist.UserAssist,
-                registryapi.RegistryAPI,
-                imageinfo.ImageInfo):
+class _IMAGE_FILE_HEADER(obj.CType):
+    def _unix_time(self, tm):
+        """Get the UTC from a unix timestamp"""
+        try:
+            return datetime.datetime.utcfromtimestamp(tm)
+        except ValueError:
+            return None
+
+    @property
+    def TimeDateStamp(self):
+        return self._unix_time(self.m('TimeDateStamp'))
+
+class ImageFileModification(obj.ProfileModification):
+    before = ["WindowsVTypes"]
+    conditions = {'os': lambda x: x == 'windows'}
+    def modification(self, profile):
+        profile.object_classes.update({'_IMAGE_FILE_HEADER': _IMAGE_FILE_HEADER})
+
+
+
+class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassist.UserAssist):
     """ Creates a timeline from various artifacts in memory """
 
     def __init__(self, config, *args):  
-        config.remove_option("HIVE-OFFSET")
+        evtlogs.EvtLogs.__init__(self, config, *args)
+        config.remove_option("SAVE-EVT")
         userassist.UserAssist.__init__(self, config, *args)
         config.remove_option("HIVE-OFFSET")
-        registryapi.RegistryAPI.__init__(self, config, *args)
-        config.remove_option("HIVE-OFFSET")
-        filescan.PSScan.__init__(self, config, *args)
-        sockscan.SockScan.__init__(self, config, *args)
-        sockets.Sockets.__init__(self, config, *args)
-        modscan.ThrdScan.__init__(self, config, *args)
         dlldump.DLLDump.__init__(self, config, *args)
         procdump.ProcExeDump.__init__(self, config, *args)
-        modscan.ModScan.__init__(self, config, *args)
-        moddump.ModDump.__init__(self, config, *args)
-        netscan.Netscan.__init__(self, config, *args)
-        evtlogs.EvtLogs.__init__(self, config, *args)
-        imageinfo.ImageInfo.__init__(self, config, *args)
         config.add_option("UNSAFE", short_option = "u", default = False, action = 'store_true',
                           help = 'Bypasses certain sanity checks when creating image')
-        config.remove_option("KEY")
-        config.remove_option("START")
-        config.remove_option("END")
-        config.remove_option("VALUE")
-
 
     def render_text(self, outfd, data):
         for line in data:
             if line != None:
                 outfd.write(line)
+    
+    def render_body(self, outfd, data):
+        for line in data:
+            if line != None:
+                outfd.write(line) 
 
     def calculate(self):
         addr_space = utils.load_as(self._config)
+        version = (addr_space.profile.metadata.get('major', 0), 
+                   addr_space.profile.metadata.get('minor', 0))
 
-        self._config.update('TIMELINE', -1)
         pids = {}     #dictionary of process IDs/ImageFileName
         offsets = []  #process offsets
         
-        im = self.get_image_time(addr_space) 
-        event = "{0}|[END LIVE RESPONSE]\n".format(im['ImageDatetime'])
+        im = imageinfo.ImageInfo(self._config).get_image_time(addr_space) 
+        body = False
+        if self._config.OUTPUT == "body":
+            body = True
+    
+        if not body:
+            event = "{0}|[END LIVE RESPONSE]\n".format(im['ImageDatetime'])
+        else:
+            event = "0|[END LIVE RESPONSE]|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(im['ImageDatetime'].v())
         yield event
                 
 
         # Get EPROCESS 
-        psscan = filescan.PSScan.calculate(self)
+        psscan = filescan.PSScan(self._config).calculate()
         for eprocess in psscan:
             if eprocess.obj_offset not in offsets:
                 offsets.append(eprocess.obj_offset)
 
             ts = eprocess.CreateTime or '-1'
-            line = "{0}|{1}|{2}|{3}|{4}|{5}|0x{6:08x}||\n".format(
+            if not body:
+                line = "{0}|{1}|{2}|{3}|{4}|{5}|0x{6:08x}||\n".format(
                     eprocess.CreateTime or '-1', 
                     "[PROCESS]",
                     eprocess.ImageFileName,
@@ -120,104 +128,131 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                     eprocess.InheritedFromUniqueProcessId,
                     eprocess.ExitTime or '',
                     eprocess.obj_offset)
+            else:
+                line = "0|[PROCESS] {2}/PID: {3}/PPID: {4}/POffset: 0x{5:08x}|0|---------------|0|0|0|{0}|{1}|{0}|{0}\n".format(
+                        eprocess.CreateTime.v(), 
+                        eprocess.ExitTime.v(),
+                        eprocess.ImageFileName,
+                        eprocess.UniqueProcessId,
+                        eprocess.InheritedFromUniqueProcessId,
+                        eprocess.obj_offset)
             pids[eprocess.UniqueProcessId.v()] = eprocess.ImageFileName
             yield line 
 
         # Get Sockets and Evtlogs XP/2k3 only
         if addr_space.profile.metadata.get('major', 0) == 5:
-            #socks = sockets.Sockets.calculate(self)
-            socks = sockscan.SockScan.calculate(self)
+            socks = sockets.Sockets(self._config).calculate()
+            #socks = sockscan.SockScan(self._config).calculate()   # you can use sockscan instead if you uncomment
             for sock in socks:
                 la = "{0}:{1}".format(sock.LocalIpAddress, sock.LocalPort)
-                line = "{0}|[SOCKET]|{1}|{2}|Protocol: {3} ({4})|{5:#010x}|||\n".format(
+                if not body:
+                    line = "{0}|[SOCKET]|{1}|{2}|Protocol: {3} ({4})|{5:#010x}|||\n".format(
                         sock.CreateTime, 
                         sock.Pid, 
                         la,
                         sock.Protocol,
                         protos.protos.get(sock.Protocol.v(), "-"),
                         sock.obj_offset)
+                else:
+                    line = "0|[SOCKET] PID: {1}/LocalIP: {2}/Protocol: {3}({4})/POffset: 0x{5:#010x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                            sock.CreateTime.v(), 
+                            sock.Pid,
+                            la,
+                            sock.Protocol,
+                            protos.protos.get(sock.Protocol.v(), "-"),
+                            sock.obj_offset)
                 yield line
 
             stuff = evtlogs.EvtLogs.calculate(self)
             for name, buf in stuff:
-                lines = self.parse_evt_info(name, buf)
-                for l in lines:
-                    l = l.replace("\n","")
-                    t = l.split("|")
-                    line = '{0} |[EVT LOG]|{1}|{2}|{3}|{4}|{5}|{6}|{7}\n'.format(
-                            t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7])
+                for fields in self.parse_evt_info(name, buf, rawtime = True):
+                    if not body:
+                        line = '{0} |[EVT LOG]|{1}|{2}|{3}|{4}|{5}|{6}|{7}\n'.format(
+                            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7])
+                    else:
+                        line = "0|[EVT LOG] {1}/{2}/{3}/{4}/{5}/{6}/{7}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                            calendar.timegm(fields[0].utctimetuple()),fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7])
                     yield line
         else:
             # Vista+
-            nets = netscan.Netscan.calculate(self)
-            for offset, proto, laddr, lport, raddr, rport, state, p, ctime in nets:
+            nets = netscan.Netscan(self._config).calculate()
+            for net_object, proto, laddr, lport, raddr, rport, state in nets:
                 conn = "{0}:{1} -> {2}:{3}".format(laddr, lport, raddr, rport)
-                line = "{0}|[NETWORK CONNECTION]|{1}|{2}|{3}|{4}|{5:<#10x}||\n".format(
-                        ctime,
-                        p.UniqueProcessId,
+                if not body:
+                    line = "{0}|[NETWORK CONNECTION]|{1}|{2}|{3}|{4}|{5:<#10x}||\n".format(
+                        str(net_object.CreateTime or "-1"),
+                        net_object.Owner.UniqueProcessId,
                         conn,
                         proto,
                         state,
-                        offset)
+                        net_object.obj_offset)
+                else:
+                    line = "0|[NETWORK CONNECTION] {1}/{2}/{3}/{4}/{5:<#10x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                        net_object.CreateTime.v(),
+                        net_object.Owner.UniqueProcessId,
+                        conn,
+                        proto,
+                        state,
+                        net_object.obj_offset)
                 yield line
 
         # Get threads
-        threads = modscan.ThrdScan.calculate(self)
+        threads = modscan.ThrdScan(self._config).calculate()
         for thread in threads:
-            try:
-                image = pids[thread.Cid.UniqueProcess.v()]
-            except:
-                image = ""
-            line = "{0}|{1}|{2}|{3}|{4}|{5}|||\n".format(
+            image = pids.get(thread.Cid.UniqueProcess.v(), "UNKNOWN")
+            if not body:
+                line = "{0}|[THREAD]|{1}|{2}|{3}|{4}|||\n".format(
                     thread.CreateTime or '-1',
-                    "[THREAD]",
                     image,
                     thread.Cid.UniqueProcess,
                     thread.Cid.UniqueThread,
                     thread.ExitTime or '',
                     )
+            else:
+                line = "0|[THREAD] {2}/PID: {3}/TID: {4}|0|---------------|0|0|0|{0}|{1}|{0}|{0}\n".format(
+                    thread.CreateTime.v(),
+                    thread.ExitTime.v(),
+                    image,
+                    thread.Cid.UniqueProcess,
+                    thread.Cid.UniqueThread,
+                    )
             yield line
 
         # now we get to the PE part.  All PE's are dumped in case you want to inspect them later
     
-        # Get module offsets by scanning
-        mod_offsets = []
-        data = modscan.ModScan.calculate(self)
-        for module in data:
-            base = "{0:#010x}".format(module.DllBase)
-            mod_offsets.append(base)
+        data = moddump.ModDump(self._config).calculate()
 
-        # and get PE timestamps for those modules
-        for base in mod_offsets:
-            self._config.update('OFFSET', int(base, 16))
-            data = moddump.ModDump.calculate(self)
-
-            for addr_space, procs, mod_base, mod_name in data:
-                space = tasks.find_space(addr_space, procs, mod_base)
-                if space != None:
-                    try:
-                        header = self.get_nt_header(space, mod_base)
-                    except ValueError, ve: 
-                        continue
-
-                    try:
-                        line = "{0}|{1}|{2}|{3}|{4:#010x}|||||\n".format(
-                            self.time_stamp(header.FileHeader.TimeDateStamp) or '-1',
-                            "[PE Timestamp (module)]",
+        for addr_space, procs, mod_base, mod_name in data:
+            space = tasks.find_space(addr_space, procs, mod_base)
+            if space != None:
+                try:
+                    header = procdump.ProcExeDump(self._config).get_nt_header(space, mod_base)
+                except ValueError, ve: 
+                    continue
+                try:
+                    if not body:
+                        line = "{0}|[PE Timestamp (module)]|{1}||{2:#010x}|||||\n".format(
+                            header.FileHeader.TimeDateStamp or '-1',
                             mod_name,
-                            "",
                             mod_base)
-                    except:
-                        line = "{0}|{1}|{2}|{3}|{4}|||||\n".format(
-                            '-1',
-                            "[PE Timestamp (module)]",
+                    else:
+                        line = "0|[PE Timestamp (module)] {1}/Base: {2:#010x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                            calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                            mod_name, mod_base)
+                except:
+                    if not body:
+                        line = "-1|[PE Timestamp (module)]|{0}||{1}|||||\n".format(
                             mod_name,
-                            "",
                             mod_base)
-                    yield line
+                    else:
+                        line = "0|[PE Timestamp (module)] {0}/Base: {1:#010x}|0|---------------|0|0|0|0|0|0|0\n".format(
+                            mod_name, mod_base)
+
+                yield line
 
 
         # get EPROCESS PE timestamps
+        # XXX revert back, now in loop
         for o in offsets:
             self._config.update('OFFSET', o)
             data = self.filter_tasks(procdump.ProcExeDump.calculate(self))
@@ -226,26 +261,40 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                 if task.Peb == None or task.Peb.ImageBaseAddress == None:
                     dllskip = True
                     continue
-
                 try:
-                    header = self.get_nt_header(task.get_process_address_space(), task.Peb.ImageBaseAddress)
+                    header = procdump.ProcExeDump(self._config).get_nt_header(task.get_process_address_space(), task.Peb.ImageBaseAddress)
                 except ValueError, ve:
                     dllskip = True
                     continue
-
                 try:
-                    line = "{0}|{1}|{2}|{3}|{4}|{5}|0x{6:08x}|||\n".format(
-                            self.time_stamp(header.FileHeader.TimeDateStamp) or "-1",
-                            "[PE Timestamp (exe)]",
+                    if not body:
+                        line = "{0}|[PE Timestamp (exe)]|{1}|{2}|{3}|{4}|0x{5:08x}|||\n".format(
+                            header.FileHeader.TimeDateStamp or "-1",
                             task.ImageFileName,
                             task.UniqueProcessId,
                             task.InheritedFromUniqueProcessId,
                             task.Peb.ProcessParameters.CommandLine,
                             o)
+                    else:
+                        line = "0|[PE Timestamp (exe)] {1}/PID: {2}/PPID: {3}/Command: {4}/POffset: 0x{5:08x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                            calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                            task.ImageFileName,
+                            task.UniqueProcessId,
+                            task.InheritedFromUniqueProcessId,
+                            task.Peb.ProcessParameters.CommandLine,
+                            o)
+
                 except:
-                    line = "{0}|{1}|{2}|{3}|{4}|{5}|0x{6:08x}|||\n".format(
-                            "-1",
-                            "[PE Timestamp (exe)]",
+                    if not body:
+                        line = "-1|[PE Timestamp (exe)]|{0}|{1}|{2}|{3}|0x{4:08x}|||\n".format(
+                            task.ImageFileName,
+                            task.UniqueProcessId,
+                            task.InheritedFromUniqueProcessId,
+                            task.Peb.ProcessParameters.CommandLine,
+                            o)
+                    else:
+                        line = "0|[PE Timestamp (exe)] {1}/PID: {2}/PPID: {3}/Command: {4}/POffset: 0x{5:08x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                            0,
                             task.ImageFileName,
                             task.UniqueProcessId,
                             task.InheritedFromUniqueProcessId,
@@ -259,37 +308,54 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
             else:
                 dllskip = False
                 dlls = []
-            for proc, ps_ad, mod_base, mod_name in dlls:
-                if ps_ad.is_valid_address(mod_base):
-                    if mod_name == task.ImageFileName:
+            for proc, ps_ad, base, basename in dlls:
+                if ps_ad.is_valid_address(base):
+                    if basename == task.ImageFileName:
                         continue
                     try:
-                        header = self.get_nt_header(ps_ad, mod_base)
+                        header = procdump.ProcExeDump(self._config).get_nt_header(ps_ad, base)
                     except ValueError, ve: 
                         continue
                     try:
-                        line = "{0}|{1}|{2}|{3}|{4}|{5}|EPROCESS Offset: 0x{6:08x}|DLL Base: {7:8x}||\n".format(
-                            self.time_stamp(header.FileHeader.TimeDateStamp) or '-1',
-                            "[PE Timestamp (dll)]",
-                            task.ImageFileName,
-                            task.UniqueProcessId,
-                            task.InheritedFromUniqueProcessId,
-                            mod_name,
-                            o,
-                            mod_base)
+                        if not body:
+                            line = "{0}|[PE Timestamp (dll)]|{1}|{2}|{3}|{4}|EPROCESS Offset: 0x{5:08x}|DLL Base: 0x{6:8x}||\n".format(
+                                header.FileHeader.TimeDateStamp or '-1',
+                                task.ImageFileName,
+                                task.UniqueProcessId,
+                                task.InheritedFromUniqueProcessId,
+                                basename,
+                                o,
+                                base)
+                        else:
+                            line = "0|[PE Timestamp (dll)] {4}/Process: {1}/PID: {2}/PPID: {3}/Process POffset: 0x{5:08x}/DLL Base: 0x{6:8x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                                calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                                task.ImageFileName,
+                                task.UniqueProcessId,
+                                task.InheritedFromUniqueProcessId,
+                                basename,
+                                o,
+                                base)
+
                     except:
-                        line = "{0}|{1}|{2}|{3}|{4}|{5}|EPROCESS Offset: 0x{6:08x}|DLL Base: {7:8x}||\n".format(
-                            "-1",
-                            "[PE Timestamp (dll)]",
-                            task.ImageFileName,
-                            task.UniqueProcessId,
-                            task.InheritedFromUniqueProcessId,
-                            mod_name,
-                            o,
-                            mod_base)
+                        if not body:
+                            line = "-1|[PE Timestamp (dll)]|{0}|{1}|{2}|{3}|EPROCESS Offset: 0x{4:08x}|DLL Base: 0x{5:8x}||\n".format(
+                                task.ImageFileName,
+                                task.UniqueProcessId,
+                                task.InheritedFromUniqueProcessId,
+                                basename,
+                                o,
+                                base)
+                        else:
+                            line = "0|[PE Timestamp (dll)] {4}/Process: {1}/PID: {2}/PPID: {3}/Process POffset: 0x{5:08x}/DLL Base: 0x{6:8x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                                0,
+                                task.ImageFileName,
+                                task.UniqueProcessId,
+                                task.InheritedFromUniqueProcessId,
+                                basename,
+                                o,
+                                base)
                     yield line
 
-        self.reset_current()
         uastuff = userassist.UserAssist.calculate(self)
         for win7, reg, key in uastuff:
             ts = "{0}".format(key.LastWriteTime)
@@ -314,7 +380,7 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                     tf = "N/A"
                     lw = "N/A"
                     if len(dat_raw) < bufferas.profile.get_obj_size('_VOLUSER_ASSIST_TYPES') or uadata == None:
-                        pass
+                        continue
                     else:
                         if hasattr(uadata, "ID"):
                             ID = "{0}".format(uadata.ID)
@@ -330,13 +396,26 @@ class TimeLiner(filescan.PSScan, sockets.Sockets,
                         lw = "{0}".format(uadata.LastUpdated)
 
                 subname = subname.replace("|", "%7c")
-                line = "{0}|[USER ASSIST]|{1}|{2}|{3}|{4}|{5}|{6}\n".format(lw, reg, subname, ID, count, fc, tf)
+                if not body:
+                    line = "{0}|[USER ASSIST]|{1}|{2}|{3}|{4}|{5}|{6}\n".format(lw, reg, subname, ID, count, fc, tf)
+                else:
+                    line = "0|[USER ASSIST] Registry: {1}/Value: {2}/ID: {3}/Count: {4}/FocusCount: {5}/TimeFocused: {6}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                        uadata.LastUpdated.v(), reg, subname, ID, count, fc, tf)
                 yield line
 
-        #self._config.update("HIVE", "system") #you could use this if you wanted to only look at one particular registry
-        regs = registryapi.RegistryAPI.calculate(self)
-        for item, reg, remark in regs:
-            item = item.replace("|", "%7c")
-            line = "{0}|[REGISTRY]|{1}|{2}|||||\n".format(remark, reg, item)
+        shimdata = shimcache.ShimCache(self._config).calculate()
+        for path, lm, lu in shimdata:
+            if lu:
+                if not body: 
+                    line = "{0}|[SHIMCACHE]|{1}|Last update: {2}\n".format(lm, path, lu)
+                else:
+                    line = "0|[SHIMCACHE] {1}|0|---------------|0|0|0|{0}|{2}|{0}|{0}\n".format(
+                        lm.v(), path, lu.v())
+            else:
+                if not body:
+                    line = "{0}|[SHIMCACHE]|{1}|Last update: N/A\n".format(lm, path)
+                else:
+                    line = "0|[SHIMCACHE] {1}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
+                        lm.v(), path)
             yield line
 
