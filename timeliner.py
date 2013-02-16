@@ -44,29 +44,9 @@ import volatility.utils as utils
 import volatility.protos as protos
 import os, sys
 import struct
-import calendar
 import volatility.debug as debug
 import volatility.obj as obj 
 import datetime
-
-class _IMAGE_FILE_HEADER(obj.CType):
-    def _unix_time(self, tm):
-        """Get the UTC from a unix timestamp"""
-        try:
-            return datetime.datetime.utcfromtimestamp(tm)
-        except ValueError:
-            return None
-
-    @property
-    def TimeDateStamp(self):
-        return self._unix_time(self.m('TimeDateStamp'))
-
-class ImageFileModification(obj.ProfileModification):
-    before = ["WindowsVTypes"]
-    conditions = {'os': lambda x: x == 'windows'}
-    def modification(self, profile):
-        profile.object_classes.update({'_IMAGE_FILE_HEADER': _IMAGE_FILE_HEADER})
-
 
 
 class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassist.UserAssist):
@@ -171,7 +151,7 @@ class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassi
                             fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7])
                     else:
                         line = "0|[EVT LOG] {1}/{2}/{3}/{4}/{5}/{6}/{7}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
-                            calendar.timegm(fields[0].utctimetuple()),fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7])
+                            fields[0].v(),fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7])
                     yield line
         else:
             # Vista+
@@ -237,7 +217,7 @@ class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassi
                             mod_base)
                     else:
                         line = "0|[PE Timestamp (module)] {1}/Base: {2:#010x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
-                            calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                            header.FileHeader.TimeDateStamp.v(),
                             mod_name, mod_base)
                 except:
                     if not body:
@@ -277,7 +257,7 @@ class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassi
                             o)
                     else:
                         line = "0|[PE Timestamp (exe)] {1}/PID: {2}/PPID: {3}/Command: {4}/POffset: 0x{5:08x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
-                            calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                            header.FileHeader.TimeDateStamp.v(),
                             task.ImageFileName,
                             task.UniqueProcessId,
                             task.InheritedFromUniqueProcessId,
@@ -328,7 +308,7 @@ class TimeLiner(dlldump.DLLDump, procdump.ProcExeDump, evtlogs.EvtLogs, userassi
                                 base)
                         else:
                             line = "0|[PE Timestamp (dll)] {4}/Process: {1}/PID: {2}/PPID: {3}/Process POffset: 0x{5:08x}/DLL Base: 0x{6:8x}|0|---------------|0|0|0|{0}|{0}|{0}|{0}\n".format(
-                                calendar.timegm(header.FileHeader.TimeDateStamp.utctimetuple()),
+                                header.FileHeader.TimeDateStamp.v(),
                                 task.ImageFileName,
                                 task.UniqueProcessId,
                                 task.InheritedFromUniqueProcessId,
